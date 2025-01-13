@@ -68,7 +68,7 @@ class BackendInfraStack(Stack):
                 'ecr:GetAuthorizationToken',
                 'ecr:DescribeImages'
             ],
-            resources=['*']
+            resources=['*'] # could specify the resource for stronger restrictions
         ))
 
         # Create security group and specify outbound rule
@@ -78,7 +78,7 @@ class BackendInfraStack(Stack):
         )
 
         # Add inbound rule for SSH from vpc
-        # if associate_public_ip_address in asg is false then still cannot to instance using ssh connection in ec2 console
+        # if associate_public_ip_address in asg is false then still cannot connect to instance using ssh connection in ec2 console
         # my_security_group.add_ingress_rule(ec2.Peer.ipv4(vpc_cidr_block), ec2.Port.tcp(22), 'Allow SSH')
         
         # Read user data script from file
