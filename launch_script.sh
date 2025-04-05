@@ -10,7 +10,7 @@ log() {
 
 # Check if log file exists, create it if not
 if [ ! -e "$LOG_FILE" ]; then
-    touch "$LOG_FILE"
+    sudo touch "$LOG_FILE"
 fi
 
 # update and install software
@@ -18,7 +18,8 @@ log "Updating packages..."
 sudo apt update
 
 log "Installing awscli..."
-sudo apt install -y awscli
+# sudo apt install -y awscli
+sudo snap install aws-cli --classic
 
 log "Installing Docker..."
 sudo apt install -y docker.io

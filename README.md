@@ -70,7 +70,7 @@ source cdk_env/bin/activate
 ```
 3. install requirements
 ```
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 4. confirm the env is activated and is uing python under env folder
 ```
@@ -87,7 +87,7 @@ deactivate
 1. make sure the venv is activated
 2. bootstrap
 ```
-cdk bootstrap
+cdk bootstrap --app "python3 app.py"
 ```
 then check the CDKToolkit stack is created in aws cloudformation
 
@@ -95,15 +95,20 @@ then check the CDKToolkit stack is created in aws cloudformation
 ```
 cdk synth
 ```
+
+```
+cdk synth --app "python3 app.py"
+```
+
 this command will generate aws resources based on the stack defined in cdk repo, the result is saved in cdk.out folder
 4. deploy
 ```
-cdk deploy
+cdk deploy --app "python3 app.py"
 ```
 5. verify the deployment
 6. stack can be destroyed with
 ```
-cdk destroy
+cdk destroy --app "python3 app.py"
 ```
 # trouble shooting
 1. if bootstrap fails, check permission, delete stack then retry

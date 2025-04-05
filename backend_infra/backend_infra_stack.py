@@ -46,7 +46,7 @@ class BackendInfraStack(Stack):
         
         # create ASG
         linux_image = ec2.GenericLinuxImage({
-                        'us-west-2': 'ami-008fe2fc65df48dac',
+                        'us-west-2': 'ami-075686beab831bb7f',
                     })
         
         # ecr role will be attached to ASG instances
@@ -71,16 +71,33 @@ class BackendInfraStack(Stack):
             resources=['*'] # could specify the resource for stronger restrictions
         ))
 
-        # Create security group and specify outbound rule
-        my_security_group = ec2.SecurityGroup(self, 'MySecurityGroup',
+        # first init security groups
+        vpc_link_sg = ec2.SecurityGroup(self, 'vpc_link_sg',
             vpc=vpc,
+            description="allow traffic from public to api gateway and AG to LB",
+            allow_all_outbound=False
+        )
+        lb_sg = ec2.SecurityGroup(self, "lb_sg",
+            vpc=vpc,
+            description="Allow traffic from API Gateway to LB and LB to ASG",
+            allow_all_outbound=False # need to explicitly set false otherwise egress rule will be ignored
+        )
+        asg_security_group = ec2.SecurityGroup(self, 'asg_sg',
+            vpc=vpc,
+            description="allow traffic from LB to ASG and ASG to public",
             allow_all_outbound=True
         )
 
-        # Add inbound rule for SSH from vpc
-        # if associate_public_ip_address in asg is false then still cannot connect to instance using ssh connection in ec2 console
-        # my_security_group.add_ingress_rule(ec2.Peer.ipv4(vpc_cidr_block), ec2.Port.tcp(22), 'Allow SSH')
-        
+        # define inbound and outbound rules
+        vpc_link_sg.add_ingress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(80), "allow public inbound traffic")
+        vpc_link_sg.add_egress_rule(lb_sg, ec2.Port.tcp(80), "allow outbound traffic to lb")
+
+        lb_sg.add_ingress_rule(vpc_link_sg, ec2.Port.tcp(80), "Allow inbound traffic from API Gateway")
+        lb_sg.add_egress_rule(asg_security_group, ec2.Port.tcp(80), "allow outbound traffic to asg")
+
+        asg_security_group.add_ingress_rule(lb_sg, ec2.Port.tcp(80), "Allow inbound traffic from lb")        
+        asg_security_group.add_ingress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(22), 'Allow SSH')
+
         # Read user data script from file
         with open('launch_script.sh', 'r') as file:
             user_data_script = file.read()
@@ -94,19 +111,21 @@ class BackendInfraStack(Stack):
             desired_capacity=1,
             auto_scaling_group_name='my-asg',
             role=ecr_role,
-            associate_public_ip_address=False,
+            associate_public_ip_address=True,
             # setup volume later
-            security_group=my_security_group,
+            security_group=asg_security_group,
             user_data=ec2.UserData.custom(user_data_script),
             # Use only private subnets for instances
-            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS)
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
         )
 
         # Create Load Balancer
         my_load_balancer = elbv2.ApplicationLoadBalancer(self, 'MyLoadBalancer',
             vpc=vpc,
             internet_facing=False,  # Set to False if internal
-            load_balancer_name='myLB'
+            load_balancer_name='myLB',
+            security_group=lb_sg,
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS)
         )
         # test false, see if only allow traffic from vpc
 
@@ -128,24 +147,15 @@ class BackendInfraStack(Stack):
         listener = my_load_balancer.add_listener('MyListener',
             port=80,
             default_target_groups=[target_group],
-            open=True
+            open=False
         )
-
-        # Create vpc sg to allow outbound traffic
-        vpc_link_security_group = ec2.SecurityGroup(self, 'vpcLinkSG',
-            vpc=vpc,
-            allow_all_outbound=True
-        )
-        
-        # allow inbound http traffic
-        vpc_link_security_group.add_ingress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(80), 'Allow external traffic to vpc link')
 
         vpc_link = apigatewayv2.VpcLink(self,
                                         id='vpc_link',
                                         vpc=vpc,
-                                        security_groups=[vpc_link_security_group],
-                                        subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
-                                        vpc_link_name='myVpcLink')
+                                        security_groups=[vpc_link_sg],
+                                        vpc_link_name='myVpcLink',
+                                        subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS))
 
         # # the API will route request from internet to LB, work as a proxy
         http_endpoint = apigatewayv2.HttpApi(self, 'httpProxyApi',
