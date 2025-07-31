@@ -3,12 +3,14 @@ from aws_cdk import (
 )
 from aws_cdk import aws_ecr as ecr
 from aws_cdk import aws_ec2 as ec2
+from aws_cdk import aws_rds as rds
 from constructs import Construct
 from aws_cdk import aws_autoscaling as autoscaling
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_elasticloadbalancingv2 as elbv2
 from aws_cdk import aws_apigatewayv2 as apigatewayv2
 import aws_cdk
+from aws_cdk import RemovalPolicy, Duration, CfnOutput
 # from aws_cdk import core
 from backend_infra.common import *
 from aws_cdk.aws_apigatewayv2_integrations import HttpAlbIntegration
@@ -53,7 +55,12 @@ class BackendInfraStack(Stack):
         # new created instance need ecr role permissions to pull ECR images for initialization
         ecr_role = iam.Role(self, 'ECRRole',
             assumed_by=iam.ServicePrincipal('ec2.amazonaws.com'),
-            managed_policies=[iam.ManagedPolicy.from_aws_managed_policy_name('AmazonEC2ContainerRegistryFullAccess')]
+            managed_policies=[iam.ManagedPolicy.from_aws_managed_policy_name('AmazonEC2ContainerRegistryFullAccess'),
+                              iam.ManagedPolicy.from_aws_managed_policy_name('SecretsManagerReadWrite'),
+                              iam.ManagedPolicy.from_aws_managed_policy_name('CloudWatchFullAccess'),
+                              iam.ManagedPolicy.from_aws_managed_policy_name('AmazonS3FullAccess'),
+                              iam.ManagedPolicy.from_aws_managed_policy_name('AmazonDynamoDBFullAccess'),
+                              ]
         )
         
         ecr_role.add_to_policy(iam.PolicyStatement(
@@ -87,6 +94,12 @@ class BackendInfraStack(Stack):
             description="allow traffic from LB to ASG and ASG to public",
             allow_all_outbound=True
         )
+        # Create a security group for the RDS instance
+        db_security_group = ec2.SecurityGroup(self, 'DatabaseSG',
+            vpc=vpc,
+            description='Security group for RDS database',
+            allow_all_outbound=True
+        )
 
         # define inbound and outbound rules
         vpc_link_sg.add_ingress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(80), "allow public inbound traffic")
@@ -98,16 +111,81 @@ class BackendInfraStack(Stack):
         asg_security_group.add_ingress_rule(lb_sg, ec2.Port.tcp(80), "Allow inbound traffic from lb")        
         asg_security_group.add_ingress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(22), 'Allow SSH')
 
-        # Read user data script from file
+        # Allow MySQL traffic (port 3306) from ASG instances to RDS
+        db_security_group.add_ingress_rule(
+            peer=asg_security_group,
+            connection=ec2.Port.tcp(3306),
+            description='Allow MySQL access from ASG instances'
+        )
+        
+        # Create RDS database
+        database = rds.DatabaseInstance(self, 'MyDatabase',
+            engine=rds.DatabaseInstanceEngine.mysql(
+                version=rds.MysqlEngineVersion.of(
+                    mysql_full_version="8.0.40",
+                    mysql_major_version="8.0"
+                )
+            ),
+            instance_type=ec2.InstanceType.of(
+                ec2.InstanceClass.BURSTABLE3,
+                ec2.InstanceSize.MICRO
+            ),
+            vpc=vpc,
+            vpc_subnets=ec2.SubnetSelection(
+                subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS
+            ),
+            security_groups=[db_security_group],
+            removal_policy=RemovalPolicy.DESTROY,  # For production, use SNAPSHOT or RETAIN
+            deletion_protection=False,  # Set to True for production
+            database_name='main',
+            credentials=rds.Credentials.from_generated_secret(username='admin', 
+                                                              secret_name='rds_credentials'),  # Auto-generates password
+            # credentials=rds.Credentials.from_password(
+            #     username="admin",
+            #     password=aws_cdk.SecretValue.unsafe_plain_text("rdspassword")
+            # ),
+            backup_retention=Duration.days(7),  # Backup retention period
+            storage_encrypted=True
+        )
+
+        # Get the secret reference
+        secret = database.secret
+        print('secret: {}'.format(secret.secret_name))
+
+        # Read and modify launch script
         with open('launch_script.sh', 'r') as file:
             user_data_script = file.read()
+            user_data_script = user_data_script.replace(
+                '__DB_SECRET_ID__', 
+                secret.secret_name
+            )
+
+        
+        # Allow ASG instances to access RDS (outbound rule)
+        asg_security_group.add_egress_rule(
+            peer=db_security_group,
+            connection=ec2.Port.tcp(3306),
+            description='Allow outbound MySQL traffic to RDS'
+        )
+        
+        # Output the database endpoint for reference
+        CfnOutput(self, 'DatabaseEndpoint',
+            value=database.db_instance_endpoint_address,
+            description='Endpoint for the RDS database'
+        )
+        
+        # Output the secret name for database credentials
+        CfnOutput(self, 'DatabaseSecretName',
+            value=database.secret.secret_name,
+            description='Name of the Secrets Manager secret for database credentials'
+        )
 
         asg = autoscaling.AutoScalingGroup(self, 'MyAutoScalingGroup',
             vpc=vpc,
             instance_type=ec2.InstanceType.of(ec2.InstanceClass.T2, ec2.InstanceSize.MICRO),
             machine_image=linux_image,
             min_capacity=1,
-            max_capacity=3,
+            max_capacity=20,
             desired_capacity=1,
             auto_scaling_group_name='my-asg',
             role=ecr_role,

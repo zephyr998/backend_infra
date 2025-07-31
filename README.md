@@ -110,5 +110,15 @@ cdk deploy --app "python3 app.py"
 ```
 cdk destroy --app "python3 app.py"
 ```
+
+# Retrieve database credentials (assuming default CDK secret naming)
+```
+DB_SECRET=$(aws secretsmanager get-secret-value --secret-id <secret id> --region us-west-2)
+DB_HOST=$(echo $DB_SECRET | jq -r '.SecretString | fromjson | .host')
+DB_USERNAME=$(echo $DB_SECRET | jq -r '.SecretString | fromjson | .username')
+DB_PASS=$(echo $DB_SECRET | jq -r '.SecretString | fromjson | .password')
+DB_NAME=$(echo $DB_SECRET | jq -r '.SecretString | fromjson | .dbname')
+```
+
 # trouble shooting
 1. if bootstrap fails, check permission, delete stack then retry
